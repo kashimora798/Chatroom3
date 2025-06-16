@@ -17,7 +17,6 @@ const Chat = () => {
     fetchMessages()
     subscribeToMessages()
 
-    // Cleanup function
     return () => {
       if (subscriptionRef.current) {
         subscriptionRef.current.unsubscribe()
@@ -48,12 +47,10 @@ const Chat = () => {
   }
 
   const subscribeToMessages = () => {
-    // Clean up existing subscription first
     if (subscriptionRef.current) {
       subscriptionRef.current.unsubscribe()
     }
 
-    // Create new subscription
     const channel = supabase.channel(`messages-${Date.now()}`)
     
     subscriptionRef.current = channel
@@ -101,7 +98,6 @@ const Chat = () => {
     const fileName = `${Date.now()}.${fileExt}`
     const filePath = `${fileName}`
 
-    // Upload image to Supabase storage
     const { error: uploadError } = await supabase.storage
       .from('chat-images')
       .upload(filePath, file)
@@ -112,12 +108,10 @@ const Chat = () => {
       return
     }
 
-    // Get public URL
     const { data } = supabase.storage
       .from('chat-images')
       .getPublicUrl(filePath)
 
-    // Send message with image
     const { error } = await supabase
       .from('messages')
       .insert([
@@ -143,7 +137,6 @@ const Chat = () => {
   }
 
   const handleSignOut = async () => {
-    // Clean up subscription before signing out
     if (subscriptionRef.current) {
       subscriptionRef.current.unsubscribe()
       subscriptionRef.current = null
@@ -159,90 +152,78 @@ const Chat = () => {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gray-100">
-      {/* Header */}
-      <div className="bg-white shadow-sm border-b p-4 flex justify-between items-center">
-        <h1 className="text-xl font-semibold text-gray-800">Chat Room</h1>
-        <div className="flex items-center space-x-4">
-          <span className="text-sm text-gray-600">{user?.email}</span>
-          <button
-            onClick={handleSignOut}
-            className="p-2 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-full"
-          >
+    <div className="chat-container">
+      <div className="chat-header">
+        <h1 className="chat-title">Chat Room</h1>
+        <div className="user-info">
+          <span className="user-email">{user?.email}</span>
+          <button onClick={handleSignOut} className="logout-btn">
             <LogOut size={20} />
           </button>
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="messages-container">
         {messages.map((message) => (
           <div
             key={message.id}
-            className={`flex ${message.user_id === user.id ? 'justify-end' : 'justify-start'}`}
+            className={`message-wrapper ${message.user_id === user.id ? 'own' : 'other'}`}
           >
-            <div
-              className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                message.user_id === user.id
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-white text-gray-800 shadow-sm'
-              }`}
-            >
+            <div className={`message-bubble ${message.user_id === user.id ? 'own' : 'other'}`}>
               {message.user_id !== user.id && (
-                <div className="text-xs text-gray-500 mb-1">
-                  {message.username}
-                </div>
+                <div className="message-username">{message.username}</div>
               )}
               
               {message.content && (
-                <div className="break-words">{message.content}</div>
+                <div className="message-content">{message.content}</div>
               )}
               
               {message.image_url && (
-                <div className="mt-2">
+                <div>
                   <img
                     src={message.image_url}
                     alt="Shared image"
-                    className="max-w-full h-auto rounded cursor-pointer"
+                    className="message-image"
                     onClick={() => window.open(message.image_url, '_blank')}
                   />
                 </div>
               )}
               
-              <div className={`text-xs mt-1 ${
-                message.user_id === user.id ? 'text-blue-100' : 'text-gray-400'
-              }`}>
+              <div className="message-time">
                 {formatTime(message.created_at)}
               </div>
             </div>
           </div>
         ))}
+        
         {uploadingImage && (
-          <div className="flex justify-end">
-            <div className="max-w-xs lg:max-w-md px-4 py-2 bg-blue-500 text-white rounded-lg">
-              <div className="animate-pulse">Uploading image...</div>
+          <div className="upload-indicator">
+            <div className="upload-bubble">
+              <div className="upload-text">
+                <div className="upload-spinner"></div>
+                Uploading image...
+              </div>
             </div>
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Message Input */}
-      <div className="bg-white border-t p-4">
-        <form onSubmit={sendMessage} className="flex space-x-2">
+      <div className="input-container">
+        <form onSubmit={sendMessage} className="input-form">
           <input
             type="file"
             ref={fileInputRef}
             onChange={handleImageUpload}
             accept="image/*"
-            className="hidden"
+            style={{ display: 'none' }}
           />
           
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploadingImage}
-            className="p-2 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-full disabled:opacity-50"
+            className="image-upload-btn"
           >
             <Image size={20} />
           </button>
@@ -252,14 +233,14 @@ const Chat = () => {
             value={newMessage}
             onChange={(e) => setNewMessage(e.target.value)}
             placeholder="Type a message..."
-            className="flex-1 border border-gray-300 rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="message-input"
             disabled={loading}
           />
           
           <button
             type="submit"
             disabled={loading || !newMessage.trim()}
-            className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+            className="send-btn"
           >
             <Send size={20} />
           </button>
