@@ -1,4 +1,136 @@
 /* Reset and Base Styles */
+/* Online status and message status styles */
+.online-count {
+  color: #4CAF50;
+  font-size: 0.9rem;
+  margin-left: auto;
+  margin-right: 1rem;
+}
+
+.online-indicator {
+  font-size: 0.8rem;
+  margin-left: 0.5rem;
+}
+
+.online-indicator.online {
+  color: #4CAF50;
+}
+
+.online-indicator.offline {
+  color: #999;
+}
+
+/* Reply functionality styles */
+.reply-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  background: #f0f0f0;
+  border-left: 3px solid #2196F3;
+  margin-bottom: 0.5rem;
+}
+
+.reply-content {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.reply-username {
+  font-weight: bold;
+  font-size: 0.8rem;
+  color: #2196F3;
+}
+
+.reply-text {
+  font-size: 0.9rem;
+  color: #666;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cancel-reply {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: #999;
+}
+
+.reply-reference {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  border-left: 3px solid #2196F3;
+}
+
+.reply-bar {
+  width: 3px;
+  background: #2196F3;
+  border-radius: 2px;
+}
+
+.reply-ref-username {
+  font-weight: bold;
+  font-size: 0.8rem;
+  color: #2196F3;
+}
+
+.reply-ref-content {
+  font-size: 0.9rem;
+  color: #666;
+  margin-top: 0.2rem;
+}
+
+/* Message status styles */
+.message-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+
+.message-status {
+  flex-shrink: 0;
+}
+
+.single-tick {
+  color: #999;
+}
+
+.double-tick {
+  color: #999;
+}
+
+.double-tick-blue {
+  color: #2196F3;
+}
+
+/* Swipe animation */
+.message-wrapper {
+  transition: transform 0.2s ease;
+}
+
+.message-wrapper.swiping {
+  transform: translateX(20px);
+}
+
+/* Touch improvements */
+.message-wrapper {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
 * {
   margin: 0;
   padding: 0;
