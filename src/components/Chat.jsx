@@ -11,7 +11,6 @@ const Chat = () => {
   const [onlineUsers, setOnlineUsers] = useState(new Set())
   const [userLastSeen, setUserLastSeen] = useState({})
   const [replyToMessage, setReplyToMessage] = useState(null)
-  const [selectedMessages, setSelectedMessages] = useState(new Set())
   const [swipeStartX, setSwipeStartX] = useState(null)
   const [swipingMessage, setSwipingMessage] = useState(null)
   
@@ -19,7 +18,8 @@ const Chat = () => {
   const messagesEndRef = useRef(null)
   const fileInputRef = useRef(null)
   const subscriptionRefs = useRef([])
-  const lastActivityRef = useRef(Date.now())
+  const heartbeatInterval = useRef(null)
+  const visibilityInterval = useRef(null)
 
   // Cleanup subscriptions
   const cleanupSubscriptions = useCallback(() => {
@@ -36,29 +36,34 @@ const Chat = () => {
     fetchOnlineUsers()
     setupSubscriptions()
     updateUserStatus(true)
+    startHeartbeat()
     
-    // Update activity timestamp periodically
-    const activityInterval = setInterval(() => {
-      updateUserStatus(true)
-    }, 30000) // Update every 30 seconds
-
     // Handle visibility change
     const handleVisibilityChange = () => {
       if (document.hidden) {
         updateUserStatus(false)
+        stopHeartbeat()
       } else {
         updateUserStatus(true)
+        startHeartbeat()
         markMessagesAsRead()
       }
     }
 
+    // Handle page unload
+    const handleBeforeUnload = () => {
+      updateUserStatus(false)
+    }
+
     document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('beforeunload', handleBeforeUnload)
 
     return () => {
       cleanupSubscriptions()
       updateUserStatus(false)
-      clearInterval(activityInterval)
+      stopHeartbeat()
       document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('beforeunload', handleBeforeUnload)
     }
   }, [])
 
@@ -67,6 +72,22 @@ const Chat = () => {
     markMessagesAsRead()
   }, [messages])
 
+  const startHeartbeat = () => {
+    // Send heartbeat every 30 seconds to maintain online status
+    heartbeatInterval.current = setInterval(() => {
+      if (!document.hidden) {
+        updateUserStatus(true)
+      }
+    }, 30000)
+  }
+
+  const stopHeartbeat = () => {
+    if (heartbeatInterval.current) {
+      clearInterval(heartbeatInterval.current)
+      heartbeatInterval.current = null
+    }
+  }
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
@@ -74,17 +95,21 @@ const Chat = () => {
   const updateUserStatus = async (isOnline) => {
     if (!user) return
     
-    const { error } = await supabase
-      .from('user_status')
-      .upsert({
-        user_id: user.id,
-        is_online: isOnline,
-        last_seen: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
+    try {
+      const { error } = await supabase
+        .from('user_status')
+        .upsert({
+          user_id: user.id,
+          is_online: isOnline,
+          last_seen: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
 
-    if (error) {
-      console.error('Error updating user status:', error)
+      if (error) {
+        console.error('Error updating user status:', error)
+      }
+    } catch (err) {
+      console.error('Network error updating status:', err)
     }
   }
 
@@ -101,7 +126,6 @@ const Chat = () => {
       console.error('Error fetching messages:', error)
     } else {
       setMessages(data || [])
-      // Mark messages as delivered
       markMessagesAsDelivered(data || [])
     }
   }
@@ -109,7 +133,7 @@ const Chat = () => {
   const fetchOnlineUsers = async () => {
     const { data, error } = await supabase
       .from('user_status')
-      .select('user_id, is_online, last_seen')
+      .select('user_id, is_online, last_seen, updated_at')
 
     if (error) {
       console.error('Error fetching online users:', error)
@@ -118,9 +142,14 @@ const Chat = () => {
 
     const online = new Set()
     const lastSeen = {}
+    const now = new Date()
     
     data.forEach(status => {
-      if (status.is_online) {
+      const lastUpdate = new Date(status.updated_at)
+      const timeDiff = now - lastUpdate
+      
+      // Consider user offline if no update in last 2 minutes
+      if (status.is_online && timeDiff < 120000) {
         online.add(status.user_id)
       }
       lastSeen[status.user_id] = status.last_seen
@@ -132,90 +161,119 @@ const Chat = () => {
 
   const markMessagesAsDelivered = async (messages) => {
     const undeliveredMessages = messages.filter(msg => 
-      msg.user_id !== user.id && msg.status !== 'delivered' && msg.status !== 'read'
+      msg.user_id !== user.id
     )
 
     for (const message of undeliveredMessages) {
-      await supabase
-        .from('message_status')
-        .upsert({
-          message_id: message.id,
-          user_id: user.id,
-          status: 'delivered'
-        })
+      try {
+        const { error } = await supabase
+          .from('message_status')
+          .upsert({
+            message_id: message.id,
+            user_id: user.id,
+            status: 'delivered'
+          })
+        
+        if (!error) {
+          // Update message status in database
+          await supabase
+            .from('messages')
+            .update({ status: 'delivered' })
+            .eq('id', message.id)
+        }
+      } catch (err) {
+        console.error('Error marking message as delivered:', err)
+      }
     }
   }
 
   const markMessagesAsRead = async () => {
     const unreadMessages = messages.filter(msg => 
-      msg.user_id !== user.id && !msg.read_at
+      msg.user_id !== user.id && msg.status !== 'read'
     )
 
     for (const message of unreadMessages) {
-      await supabase
-        .from('message_status')
-        .upsert({
-          message_id: message.id,
-          user_id: user.id,
-          status: 'read'
-        })
+      try {
+        const { error } = await supabase
+          .from('message_status')
+          .upsert({
+            message_id: message.id,
+            user_id: user.id,
+            status: 'read'
+          })
+
+        if (!error) {
+          // Update message status in database
+          await supabase
+            .from('messages')
+            .update({ 
+              status: 'read',
+              read_at: new Date().toISOString()
+            })
+            .eq('id', message.id)
+        }
+      } catch (err) {
+        console.error('Error marking message as read:', err)
+      }
     }
   }
 
   const setupSubscriptions = () => {
-  // Messages subscription
-  const messagesChannel = supabase.channel(`messages-${Date.now()}`)
-    .on('postgres_changes', 
-      { event: 'INSERT', schema: 'public', table: 'messages' },
-      async (payload) => {
-        try {
-          // Fetch the complete message with reply reference
-          const { data: completeMessage, error } = await supabase
-            .from('messages')
-            .select(`
-              *,
-              reply_to:reply_to_id(id, content, username, image_url)
-            `)
-            .eq('id', payload.new.id)
-            .single()
+    // Messages subscription
+    const messagesChannel = supabase.channel(`messages-${Date.now()}`)
+      .on('postgres_changes', 
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        async (payload) => {
+          try {
+            const { data: completeMessage, error } = await supabase
+              .from('messages')
+              .select(`
+                *,
+                reply_to:reply_to_id(id, content, username, image_url)
+              `)
+              .eq('id', payload.new.id)
+              .single()
 
-          if (error) {
-            console.error('Error fetching complete message:', error)
-            // Fallback to basic message
+            if (error) {
+              console.error('Error fetching complete message:', error)
+              setMessages(prev => [...prev, payload.new])
+            } else {
+              setMessages(prev => [...prev, completeMessage])
+            }
+          } catch (err) {
+            console.error('Error in message subscription:', err)
             setMessages(prev => [...prev, payload.new])
-          } else {
-            setMessages(prev => [...prev, completeMessage])
           }
-        } catch (err) {
-          console.error('Error in message subscription:', err)
-          // Fallback to basic message
-          setMessages(prev => [...prev, payload.new])
         }
-      }
-    )
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Successfully subscribed to messages')
-      } else if (status === 'CHANNEL_ERROR') {
-        console.error('Message subscription error')
-      }
-    })
+      )
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'messages' },
+        (payload) => {
+          setMessages(prev => 
+            prev.map(msg => 
+              msg.id === payload.new.id ? { ...msg, ...payload.new } : msg
+            )
+          )
+        }
+      )
+      .subscribe()
 
-  // User status subscription
-  const statusChannel = supabase.channel(`user-status-${Date.now()}`)
-    .on('postgres_changes',
-      { event: '*', schema: 'public', table: 'user_status' },
-      () => {
-        fetchOnlineUsers()
-      }
-    )
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Successfully subscribed to user status')
-      }
-    })
+    // User status subscription with cleanup of stale users
+    const statusChannel = supabase.channel(`user-status-${Date.now()}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'user_status' },
+        () => {
+          fetchOnlineUsers()
+        }
+      )
+      .subscribe()
 
-  subscriptionRefs.current = [messagesChannel, statusChannel]
+    subscriptionRefs.current = [messagesChannel, statusChannel]
+
+    // Cleanup stale online users every minute
+    visibilityInterval.current = setInterval(() => {
+      fetchOnlineUsers()
+    }, 60000)
   }
 
   const sendMessage = async (e) => {
@@ -302,6 +360,10 @@ const Chat = () => {
 
   const handleSignOut = async () => {
     await updateUserStatus(false)
+    stopHeartbeat()
+    if (visibilityInterval.current) {
+      clearInterval(visibilityInterval.current)
+    }
     cleanupSubscriptions()
     await signOut()
   }
@@ -319,20 +381,20 @@ const Chat = () => {
     const diffInMinutes = Math.floor((now - lastSeen) / (1000 * 60))
     
     if (diffInMinutes < 1) return 'just now'
-    if (diffInMinutes < 60) return `${diffInMinutes}m ago`
+    if (diffInMinutes < 60) return `${diffInMinutes}min ago`
     
     const diffInHours = Math.floor(diffInMinutes / 60)
     if (diffInHours < 24) return `${diffInHours}h ago`
     
     const diffInDays = Math.floor(diffInHours / 24)
-    return `${diffInDays}d ago`
+    if (diffInDays === 1) return 'yesterday'
+    return `${diffInDays} days ago`
   }
 
   const getMessageStatus = (message) => {
     if (message.user_id === user.id) {
-      // Your own message
-      if (message.read_at) return 'read'
-      if (message.delivered_at || message.status === 'delivered') return 'delivered'
+      if (message.status === 'read' || message.read_at) return 'read'
+      if (message.status === 'delivered') return 'delivered'
       return 'sent'
     }
     return null
@@ -367,7 +429,7 @@ const Chat = () => {
     const touch = e.touches[0]
     const deltaX = touch.clientX - swipeStartX
     
-    if (deltaX > 50) { // Swipe right threshold
+    if (deltaX > 50) {
       setReplyToMessage(message)
       setSwipeStartX(null)
       setSwipingMessage(null)
@@ -384,6 +446,7 @@ const Chat = () => {
       <div className="chat-header">
         <h1 className="chat-title">Chat Room</h1>
         <div className="online-count">
+          <span className="online-dot"></span>
           {onlineUsers.size} online
         </div>
         <div className="user-info">
@@ -418,7 +481,7 @@ const Chat = () => {
         {messages.map((message) => (
           <div
             key={message.id}
-            className={`message-wrapper ${message.user_id === user.id ? 'own' : 'other'}`}
+            className={`message-wrapper ${message.user_id === user.id ? 'own' : 'other'} ${swipingMessage === message.id ? 'swiping' : ''}`}
             onTouchStart={(e) => handleTouchStart(e, message)}
             onTouchMove={(e) => handleTouchMove(e, message)}
             onTouchEnd={handleTouchEnd}
@@ -428,12 +491,20 @@ const Chat = () => {
                 <div className="message-username">
                   {message.username}
                   <span className={`online-indicator ${onlineUsers.has(message.user_id) ? 'online' : 'offline'}`}>
-                    {onlineUsers.has(message.user_id) 
-                      ? '🟢' 
-                      : userLastSeen[message.user_id] 
-                        ? `🔴 ${formatLastSeen(userLastSeen[message.user_id])}`
-                        : '🔴'
-                    }
+                    {onlineUsers.has(message.user_id) ? (
+                      <>
+                        <span className="online-dot"></span>
+                        online
+                      </>
+                    ) : (
+                      <>
+                        <span className="offline-dot"></span>
+                        {userLastSeen[message.user_id] 
+                          ? formatLastSeen(userLastSeen[message.user_id])
+                          : 'offline'
+                        }
+                      </>
+                    )}
                   </span>
                 </div>
               )}
