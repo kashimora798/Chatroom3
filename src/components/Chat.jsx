@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { Send, Image, LogOut, Reply, Check, CheckCheck } from 'lucide-react'
+import { Send, Image, LogOut, Reply, Check, CheckCheck, Users } from 'lucide-react'
 
 const Chat = () => {
   const [messages, setMessages] = useState([])
@@ -10,6 +10,8 @@ const Chat = () => {
   const [uploadingImage, setUploadingImage] = useState(false)
   const [onlineUsers, setOnlineUsers] = useState(new Set())
   const [userLastSeen, setUserLastSeen] = useState({})
+  const [allUsers, setAllUsers] = useState([]) // New state for all users
+  const [showUsersModal, setShowUsersModal] = useState(false) // New state for modal
   const [replyToMessage, setReplyToMessage] = useState(null)
   const [selectedMessages, setSelectedMessages] = useState(new Set())
   const [swipeStartX, setSwipeStartX] = useState(null)
@@ -33,6 +35,7 @@ const Chat = () => {
 
   useEffect(() => {
     fetchMessages()
+    fetchAllUsers() // Fetch all users
     fetchOnlineUsers()
     setupSubscriptions()
     updateUserStatus(true)
@@ -71,21 +74,60 @@ const Chat = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
-  const updateUserStatus = async (isOnline) => {
-    if (!user) return
-    
-    const { error } = await supabase
-      .from('user_status')
-      .upsert({
-        user_id: user.id,
-        is_online: isOnline,
-        last_seen: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
+ const updateUserStatus = async (isOnline) => {
+  if (!user) return
+  
+  try {
+    const { error } = await supabase.rpc('update_user_status', {
+      p_user_id: user.id,
+      p_is_online: isOnline,
+      p_last_seen: new Date().toISOString()
+    })
 
     if (error) {
       console.error('Error updating user status:', error)
     }
+  } catch (err) {
+    console.error('Unexpected error updating user status:', err)
+  }
+}
+
+  // New function to fetch all users
+  const fetchAllUsers = async () => {
+    const { data, error } = await supabase
+      .from('user_status')
+      .select('user_id, is_online, last_seen, updated_at')
+
+    if (error) {
+      console.error('Error fetching all users:', error)
+      return
+    }
+
+    // Get unique user emails from messages
+    const { data: messagesData, error: messagesError } = await supabase
+      .from('messages')
+      .select('user_id, username')
+
+    if (messagesError) {
+      console.error('Error fetching user emails:', messagesError)
+      return
+    }
+
+    // Create a map of user_id to username
+    const userMap = {}
+    messagesData.forEach(msg => {
+      if (!userMap[msg.user_id]) {
+        userMap[msg.user_id] = msg.username
+      }
+    })
+
+    // Combine status and username data
+    const usersWithStatus = data.map(status => ({
+      ...status,
+      username: userMap[status.user_id] || 'Unknown User'
+    }))
+
+    setAllUsers(usersWithStatus)
   }
 
   const fetchMessages = async () => {
@@ -163,60 +205,58 @@ const Chat = () => {
   }
 
   const setupSubscriptions = () => {
-  // Messages subscription
-  const messagesChannel = supabase.channel(`messages-${Date.now()}`)
-    .on('postgres_changes', 
-      { event: 'INSERT', schema: 'public', table: 'messages' },
-      async (payload) => {
-        try {
-          // Fetch the complete message with reply reference
-          const { data: completeMessage, error } = await supabase
-            .from('messages')
-            .select(`
-              *,
-              reply_to:reply_to_id(id, content, username, image_url)
-            `)
-            .eq('id', payload.new.id)
-            .single()
+    // Messages subscription
+    const messagesChannel = supabase.channel(`messages-${Date.now()}`)
+      .on('postgres_changes', 
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        async (payload) => {
+          try {
+            // Fetch the complete message with reply reference
+            const { data: completeMessage, error } = await supabase
+              .from('messages')
+              .select(`
+                *,
+                reply_to:reply_to_id(id, content, username, image_url)
+              `)
+              .eq('id', payload.new.id)
+              .single()
 
-          if (error) {
-            console.error('Error fetching complete message:', error)
+            if (error) {
+              console.error('Error fetching complete message:', error)
+              // Fallback to basic message
+              setMessages(prev => [...prev, payload.new])
+            } else {
+              setMessages(prev => [...prev, completeMessage])
+            }
+          } catch (err) {
+            console.error('Error in message subscription:', err)
             // Fallback to basic message
             setMessages(prev => [...prev, payload.new])
-          } else {
-            setMessages(prev => [...prev, completeMessage])
           }
-        } catch (err) {
-          console.error('Error in message subscription:', err)
-          // Fallback to basic message
-          setMessages(prev => [...prev, payload.new])
         }
-      }
-    )
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Successfully subscribed to messages')
-      } else if (status === 'CHANNEL_ERROR') {
-        console.error('Message subscription error')
-      }
-    })
+      )
+      .subscribe()
 
-  // User status subscription
-  const statusChannel = supabase.channel(`user-status-${Date.now()}`)
-    .on('postgres_changes',
-      { event: '*', schema: 'public', table: 'user_status' },
-      () => {
-        fetchOnlineUsers()
-      }
-    )
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Successfully subscribed to user status')
-      }
-    })
+    // IMPROVED User status subscription - listen to ALL events
+    const statusChannel = supabase.channel(`user-status-${Date.now()}`)
+      .on('postgres_changes',
+        { 
+          event: '*', // Listen to all events (INSERT, UPDATE, DELETE)
+          schema: 'public', 
+          table: 'user_status' 
+        },
+        (payload) => {
+          console.log('User status changed:', payload)
+          // Immediately update the UI
+          fetchOnlineUsers()
+          fetchAllUsers() // Also update all users list
+        }
+      )
+      .subscribe()
 
-  subscriptionRefs.current = [messagesChannel, statusChannel]
+    subscriptionRefs.current = [messagesChannel, statusChannel]
   }
+
   const sendMessage = async (e) => {
     e.preventDefault()
     if (!newMessage.trim() && !replyToMessage) return
@@ -382,7 +422,8 @@ const Chat = () => {
     <div className="chat-container">
       <div className="chat-header">
         <h1 className="chat-title">Chat Room</h1>
-        <div className="online-count">
+        <div className="online-count" onClick={() => setShowUsersModal(true)}>
+          <Users size={20} />
           {onlineUsers.size} online
         </div>
         <div className="user-info">
@@ -392,6 +433,40 @@ const Chat = () => {
           </button>
         </div>
       </div>
+
+      {/* Users Modal */}
+      {showUsersModal && (
+        <div className="modal-overlay" onClick={() => setShowUsersModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>All Users</h2>
+              <button onClick={() => setShowUsersModal(false)} className="modal-close">
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              {allUsers.map((userStatus) => (
+                <div key={userStatus.user_id} className="user-item">
+                  <div className="user-info-modal">
+                    <div className="user-name">{userStatus.username}</div>
+                    <div className="user-status">
+                      {onlineUsers.has(userStatus.user_id) ? (
+                        <span className="online-status">
+                          🟢 Online
+                        </span>
+                      ) : (
+                        <span className="offline-status">
+                          🔴 Last seen {formatLastSeen(userStatus.last_seen)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {replyToMessage && (
         <div className="reply-preview">
@@ -524,6 +599,7 @@ const Chat = () => {
           </button>
         </form>
       </div>
+   
     </div>
   )
 }
