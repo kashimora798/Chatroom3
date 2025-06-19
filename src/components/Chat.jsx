@@ -1,307 +1,257 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
-import { Send, Image, LogOut, Reply, Check, CheckCheck } from 'lucide-react'
+import { Send, Image, LogOut, CheckCheck, Check } from 'lucide-react'
 
 const Chat = () => {
   const [messages, setMessages] = useState([])
   const [newMessage, setNewMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const [uploadingImage, setUploadingImage] = useState(false)
-  const [onlineUsers, setOnlineUsers] = useState(new Set())
-  const [userLastSeen, setUserLastSeen] = useState({})
-  const [replyToMessage, setReplyToMessage] = useState(null)
-  const [swipeStartX, setSwipeStartX] = useState(null)
-  const [swipingMessage, setSwipingMessage] = useState(null)
-  
+  const [userPresence, setUserPresence] = useState({})
   const { user, signOut } = useAuth()
   const messagesEndRef = useRef(null)
   const fileInputRef = useRef(null)
-  const subscriptionRefs = useRef([])
-  const heartbeatInterval = useRef(null)
-  const visibilityInterval = useRef(null)
+  const subscriptionRef = useRef(null)
+  const presenceChannelRef = useRef(null)
+  const heartbeatRef = useRef(null)
 
-  // Cleanup subscriptions
-  const cleanupSubscriptions = useCallback(() => {
-    subscriptionRefs.current.forEach(sub => {
-      if (sub && typeof sub.unsubscribe === 'function') {
-        sub.unsubscribe()
-      }
-    })
-    subscriptionRefs.current = []
-  }, [])
+  // Presence tracking functions
+  const updatePresence = async (isOnline = true) => {
+    if (!user) return
+    
+    await supabase
+      .from('user_presence')
+      .upsert({
+        user_id: user.id,
+        is_online: isOnline,
+        last_seen: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+  }
+
+  const startPresenceTracking = async () => {
+    if (!user) return
+
+    // Set user as online
+    await updatePresence(true)
+
+    // Setup heartbeat to update presence every 30 seconds
+    heartbeatRef.current = setInterval(() => {
+      updatePresence(true)
+    }, 30000)
+
+    // Setup presence channel for real-time updates
+    presenceChannelRef.current = supabase
+      .channel('user_presence_changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'user_presence' },
+        (payload) => {
+          if (payload.new) {
+            setUserPresence(prev => ({
+              ...prev,
+              [payload.new.user_id]: payload.new
+            }))
+          }
+        }
+      )
+      .subscribe()
+
+    // Initial fetch of presence data
+    await fetchPresenceData()
+  }
+
+  const fetchPresenceData = async () => {
+    const { data } = await supabase
+      .from('user_presence')
+      .select('*')
+    
+    if (data) {
+      const presenceMap = {}
+      data.forEach(p => {
+        presenceMap[p.user_id] = p
+      })
+      setUserPresence(presenceMap)
+    }
+  }
+
+  const stopPresenceTracking = async () => {
+    // Clear heartbeat
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current)
+      heartbeatRef.current = null
+    }
+
+    // Unsubscribe from presence channel
+    if (presenceChannelRef.current) {
+      presenceChannelRef.current.unsubscribe()
+      presenceChannelRef.current = null
+    }
+
+    // Set user as offline
+    await updatePresence(false)
+  }
+
+  // Handle page visibility changes
+  const handleVisibilityChange = () => {
+    if (document.hidden) {
+      updatePresence(false)
+    } else {
+      updatePresence(true)
+    }
+  }
+
+  // Handle page unload
+  const handleBeforeUnload = () => {
+    updatePresence(false)
+  }
 
   useEffect(() => {
-    fetchMessages()
-    fetchOnlineUsers()
-    setupSubscriptions()
-    updateUserStatus(true)
-    startHeartbeat()
-    
-    // Handle visibility change
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        updateUserStatus(false)
-        stopHeartbeat()
-      } else {
-        updateUserStatus(true)
-        startHeartbeat()
-        markMessagesAsRead()
-      }
-    }
+    if (user) {
+      fetchMessages()
+      subscribeToMessages()
+      startPresenceTracking()
 
-    // Handle page unload
-    const handleBeforeUnload = () => {
-      updateUserStatus(false)
+      // Add event listeners for presence tracking
+      document.addEventListener('visibilitychange', handleVisibilityChange)
+      window.addEventListener('beforeunload', handleBeforeUnload)
     }
-
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    window.addEventListener('beforeunload', handleBeforeUnload)
 
     return () => {
-      cleanupSubscriptions()
-      updateUserStatus(false)
-      stopHeartbeat()
+      if (subscriptionRef.current) {
+        subscriptionRef.current.unsubscribe()
+        subscriptionRef.current = null
+      }
+      
+      stopPresenceTracking()
+      
+      // Remove event listeners
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('beforeunload', handleBeforeUnload)
     }
-  }, [])
+  }, [user])
 
   useEffect(() => {
     scrollToBottom()
-    markMessagesAsRead()
   }, [messages])
-
-  const startHeartbeat = () => {
-    // Send heartbeat every 30 seconds to maintain online status
-    heartbeatInterval.current = setInterval(() => {
-      if (!document.hidden) {
-        updateUserStatus(true)
-      }
-    }, 30000)
-  }
-
-  const stopHeartbeat = () => {
-    if (heartbeatInterval.current) {
-      clearInterval(heartbeatInterval.current)
-      heartbeatInterval.current = null
-    }
-  }
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
-  const updateUserStatus = async (isOnline) => {
-    if (!user) return
-    
-    try {
-      const { error } = await supabase
-        .from('user_status')
-        .upsert({
-          user_id: user.id,
-          is_online: isOnline,
-          last_seen: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-
-      if (error) {
-        console.error('Error updating user status:', error)
-      }
-    } catch (err) {
-      console.error('Network error updating status:', err)
-    }
-  }
-
   const fetchMessages = async () => {
     const { data, error } = await supabase
       .from('messages')
-      .select(`
-        *,
-        reply_to:reply_to_id(id, content, username, image_url)
-      `)
+      .select('*, delivered, seen, delivered_at, seen_at')
       .order('created_at', { ascending: true })
 
     if (error) {
       console.error('Error fetching messages:', error)
     } else {
       setMessages(data || [])
-      markMessagesAsDelivered(data || [])
+      // Mark messages as seen
+      markMessagesAsSeen(data || [])
     }
   }
 
-  const fetchOnlineUsers = async () => {
-    const { data, error } = await supabase
-      .from('user_status')
-      .select('user_id, is_online, last_seen, updated_at')
+  const markMessagesAsSeen = async (messages) => {
+    const unseenMessages = messages.filter(msg => 
+      msg.user_id !== user.id && !msg.seen
+    )
 
-    if (error) {
-      console.error('Error fetching online users:', error)
-      return
-    }
-
-    const online = new Set()
-    const lastSeen = {}
-    const now = new Date()
-    
-    data.forEach(status => {
-      const lastUpdate = new Date(status.updated_at)
-      const timeDiff = now - lastUpdate
+    if (unseenMessages.length > 0) {
+      const messageIds = unseenMessages.map(msg => msg.id)
       
-      // Consider user offline if no update in last 2 minutes
-      if (status.is_online && timeDiff < 120000) {
-        online.add(status.user_id)
-      }
-      lastSeen[status.user_id] = status.last_seen
-    })
-
-    setOnlineUsers(online)
-    setUserLastSeen(lastSeen)
-  }
-
-  const markMessagesAsDelivered = async (messages) => {
-    const undeliveredMessages = messages.filter(msg => 
-      msg.user_id !== user.id
-    )
-
-    for (const message of undeliveredMessages) {
-      try {
-        const { error } = await supabase
-          .from('message_status')
-          .upsert({
-            message_id: message.id,
-            user_id: user.id,
-            status: 'delivered'
-          })
-        
-        if (!error) {
-          // Update message status in database
-          await supabase
-            .from('messages')
-            .update({ status: 'delivered' })
-            .eq('id', message.id)
-        }
-      } catch (err) {
-        console.error('Error marking message as delivered:', err)
-      }
+      await supabase
+        .from('messages')
+        .update({ 
+          seen: true, 
+          seen_at: new Date().toISOString() 
+        })
+        .in('id', messageIds)
     }
   }
 
-  const markMessagesAsRead = async () => {
-    const unreadMessages = messages.filter(msg => 
-      msg.user_id !== user.id && msg.status !== 'read'
-    )
-
-    for (const message of unreadMessages) {
-      try {
-        const { error } = await supabase
-          .from('message_status')
-          .upsert({
-            message_id: message.id,
-            user_id: user.id,
-            status: 'read'
-          })
-
-        if (!error) {
-          // Update message status in database
-          await supabase
-            .from('messages')
-            .update({ 
-              status: 'read',
-              read_at: new Date().toISOString()
-            })
-            .eq('id', message.id)
-        }
-      } catch (err) {
-        console.error('Error marking message as read:', err)
-      }
+  const subscribeToMessages = () => {
+    if (subscriptionRef.current) {
+      subscriptionRef.current.unsubscribe()
     }
-  }
 
-  const setupSubscriptions = () => {
-    // Messages subscription
-    const messagesChannel = supabase.channel(`messages-${Date.now()}`)
+    const channel = supabase.channel(`messages-${Date.now()}`)
+    
+    subscriptionRef.current = channel
       .on('postgres_changes', 
         { event: 'INSERT', schema: 'public', table: 'messages' },
-        async (payload) => {
-          try {
-            const { data: completeMessage, error } = await supabase
-              .from('messages')
-              .select(`
-                *,
-                reply_to:reply_to_id(id, content, username, image_url)
-              `)
-              .eq('id', payload.new.id)
-              .single()
-
-            if (error) {
-              console.error('Error fetching complete message:', error)
-              setMessages(prev => [...prev, payload.new])
-            } else {
-              setMessages(prev => [...prev, completeMessage])
-            }
-          } catch (err) {
-            console.error('Error in message subscription:', err)
-            setMessages(prev => [...prev, payload.new])
+        (payload) => {
+          setMessages(prev => [...prev, payload.new])
+          
+          // If it's not our message, mark it as seen after a short delay
+          if (payload.new.user_id !== user.id) {
+            setTimeout(async () => {
+              await supabase
+                .from('messages')
+                .update({ 
+                  seen: true, 
+                  seen_at: new Date().toISOString() 
+                })
+                .eq('id', payload.new.id)
+            }, 1000)
           }
         }
       )
-      .on('postgres_changes',
+      .on('postgres_changes', 
         { event: 'UPDATE', schema: 'public', table: 'messages' },
         (payload) => {
           setMessages(prev => 
             prev.map(msg => 
-              msg.id === payload.new.id ? { ...msg, ...payload.new } : msg
+              msg.id === payload.new.id ? payload.new : msg
             )
           )
         }
       )
-      .subscribe()
-
-    // User status subscription with cleanup of stale users
-    const statusChannel = supabase.channel(`user-status-${Date.now()}`)
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'user_status' },
-        () => {
-          fetchOnlineUsers()
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('Successfully subscribed to messages')
         }
-      )
-      .subscribe()
-
-    subscriptionRefs.current = [messagesChannel, statusChannel]
-
-    // Cleanup stale online users every minute
-    visibilityInterval.current = setInterval(() => {
-      fetchOnlineUsers()
-    }, 60000)
+      })
   }
 
   const sendMessage = async (e) => {
     e.preventDefault()
-    if (!newMessage.trim() && !replyToMessage) return
+    if (!newMessage.trim()) return
 
     setLoading(true)
 
-    const messageData = {
-      content: newMessage,
-      user_id: user.id,
-      username: user.email,
-      status: 'sent'
-    }
-
-    if (replyToMessage) {
-      messageData.reply_to_id = replyToMessage.id
-    }
-
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('messages')
-      .insert([messageData])
+      .insert([
+        {
+          content: newMessage,
+          user_id: user.id,
+          username: user.email,
+          delivered: false,
+          seen: false
+        }
+      ])
+      .select()
 
     if (error) {
       console.error('Error sending message:', error)
     } else {
       setNewMessage('')
-      setReplyToMessage(null)
+      
+      // Auto-mark as delivered after a short delay (simulating network delivery)
+      if (data && data[0]) {
+        setTimeout(async () => {
+          await supabase
+            .from('messages')
+            .update({ 
+              delivered: true, 
+              delivered_at: new Date().toISOString() 
+            })
+            .eq('id', data[0].id)
+        }, 1000)
+      }
     }
     setLoading(false)
   }
@@ -327,25 +277,32 @@ const Chat = () => {
       .from('chat-images')
       .getPublicUrl(filePath)
 
-    const messageData = {
-      image_url: data.publicUrl,
-      user_id: user.id,
-      username: user.email,
-      status: 'sent'
-    }
-
-    if (replyToMessage) {
-      messageData.reply_to_id = replyToMessage.id
-    }
-
-    const { error } = await supabase
+    const { data: messageData, error } = await supabase
       .from('messages')
-      .insert([messageData])
+      .insert([
+        {
+          image_url: data.publicUrl,
+          user_id: user.id,
+          username: user.email,
+          delivered: false,
+          seen: false
+        }
+      ])
+      .select()
 
     if (error) {
       console.error('Error sending image message:', error)
-    } else {
-      setReplyToMessage(null)
+    } else if (messageData && messageData[0]) {
+      // Auto-mark as delivered after a short delay
+      setTimeout(async () => {
+        await supabase
+          .from('messages')
+          .update({ 
+            delivered: true, 
+            delivered_at: new Date().toISOString() 
+          })
+          .eq('id', messageData[0].id)
+      }, 1000)
     }
     
     setUploadingImage(false)
@@ -359,12 +316,13 @@ const Chat = () => {
   }
 
   const handleSignOut = async () => {
-    await updateUserStatus(false)
-    stopHeartbeat()
-    if (visibilityInterval.current) {
-      clearInterval(visibilityInterval.current)
+    await stopPresenceTracking()
+    
+    if (subscriptionRef.current) {
+      subscriptionRef.current.unsubscribe()
+      subscriptionRef.current = null
     }
-    cleanupSubscriptions()
+    
     await signOut()
   }
 
@@ -375,80 +333,35 @@ const Chat = () => {
     })
   }
 
-  const formatLastSeen = (timestamp) => {
+  // Function to check if user is online
+  const isUserOnline = (userId) => {
+    const presence = userPresence[userId]
+    if (!presence) return false
+    
+    const lastSeen = new Date(presence.last_seen)
     const now = new Date()
-    const lastSeen = new Date(timestamp)
-    const diffInMinutes = Math.floor((now - lastSeen) / (1000 * 60))
+    const diffMinutes = (now - lastSeen) / (1000 * 60)
     
-    if (diffInMinutes < 1) return 'just now'
-    if (diffInMinutes < 60) return `${diffInMinutes}min ago`
-    
-    const diffInHours = Math.floor(diffInMinutes / 60)
-    if (diffInHours < 24) return `${diffInHours}h ago`
-    
-    const diffInDays = Math.floor(diffInHours / 24)
-    if (diffInDays === 1) return 'yesterday'
-    return `${diffInDays} days ago`
+    return presence.is_online && diffMinutes < 2 // Consider online if active within 2 minutes
   }
 
-  const getMessageStatus = (message) => {
-    if (message.user_id === user.id) {
-      if (message.status === 'read' || message.read_at) return 'read'
-      if (message.status === 'delivered') return 'delivered'
-      return 'sent'
-    }
-    return null
-  }
-
+  // Function to render message status
   const renderMessageStatus = (message) => {
-    const status = getMessageStatus(message)
-    if (!status) return null
+    if (message.user_id !== user.id) return null
 
-    switch (status) {
-      case 'sent':
-        return <Check size={16} className="message-status single-tick" />
-      case 'delivered':
-        return <CheckCheck size={16} className="message-status double-tick" />
-      case 'read':
-        return <CheckCheck size={16} className="message-status double-tick-blue" />
-      default:
-        return null
+    if (message.seen) {
+      return <CheckCheck size={16} className="message-status seen" />
+    } else if (message.delivered) {
+      return <CheckCheck size={16} className="message-status delivered" />
+    } else {
+      return <Check size={16} className="message-status sent" />
     }
-  }
-
-  // Touch/swipe handlers
-  const handleTouchStart = (e, message) => {
-    const touch = e.touches[0]
-    setSwipeStartX(touch.clientX)
-    setSwipingMessage(message.id)
-  }
-
-  const handleTouchMove = (e, message) => {
-    if (!swipeStartX || swipingMessage !== message.id) return
-    
-    const touch = e.touches[0]
-    const deltaX = touch.clientX - swipeStartX
-    
-    if (deltaX > 50) {
-      setReplyToMessage(message)
-      setSwipeStartX(null)
-      setSwipingMessage(null)
-    }
-  }
-
-  const handleTouchEnd = () => {
-    setSwipeStartX(null)
-    setSwipingMessage(null)
   }
 
   return (
     <div className="chat-container">
       <div className="chat-header">
         <h1 className="chat-title">Chat Room</h1>
-        <div className="online-count">
-          <span className="online-dot"></span>
-          {onlineUsers.size} online
-        </div>
         <div className="user-info">
           <span className="user-email">{user?.email}</span>
           <button onClick={handleSignOut} className="logout-btn">
@@ -457,67 +370,19 @@ const Chat = () => {
         </div>
       </div>
 
-      {replyToMessage && (
-        <div className="reply-preview">
-          <div className="reply-content">
-            <Reply size={16} />
-            <div>
-              <div className="reply-username">{replyToMessage.username}</div>
-              <div className="reply-text">
-                {replyToMessage.content || 'Image'}
-              </div>
-            </div>
-          </div>
-          <button 
-            onClick={() => setReplyToMessage(null)}
-            className="cancel-reply"
-          >
-            ×
-          </button>
-        </div>
-      )}
-
       <div className="messages-container">
         {messages.map((message) => (
           <div
             key={message.id}
-            className={`message-wrapper ${message.user_id === user.id ? 'own' : 'other'} ${swipingMessage === message.id ? 'swiping' : ''}`}
-            onTouchStart={(e) => handleTouchStart(e, message)}
-            onTouchMove={(e) => handleTouchMove(e, message)}
-            onTouchEnd={handleTouchEnd}
+            className={`message-wrapper ${message.user_id === user.id ? 'own' : 'other'}`}
           >
             <div className={`message-bubble ${message.user_id === user.id ? 'own' : 'other'}`}>
               {message.user_id !== user.id && (
                 <div className="message-username">
                   {message.username}
-                  <span className={`online-indicator ${onlineUsers.has(message.user_id) ? 'online' : 'offline'}`}>
-                    {onlineUsers.has(message.user_id) ? (
-                      <>
-                        <span className="online-dot"></span>
-                        online
-                      </>
-                    ) : (
-                      <>
-                        <span className="offline-dot"></span>
-                        {userLastSeen[message.user_id] 
-                          ? formatLastSeen(userLastSeen[message.user_id])
-                          : 'offline'
-                        }
-                      </>
-                    )}
-                  </span>
-                </div>
-              )}
-
-              {message.reply_to && (
-                <div className="reply-reference">
-                  <div className="reply-bar"></div>
-                  <div>
-                    <div className="reply-ref-username">{message.reply_to.username}</div>
-                    <div className="reply-ref-content">
-                      {message.reply_to.content || 'Image'}
-                    </div>
-                  </div>
+                  {isUserOnline(message.user_id) && (
+                    <span className="online-indicator">●</span>
+                  )}
                 </div>
               )}
               
@@ -589,7 +454,7 @@ const Chat = () => {
           
           <button
             type="submit"
-            disabled={loading || (!newMessage.trim() && !replyToMessage)}
+            disabled={loading || !newMessage.trim()}
             className="send-btn"
           >
             <Send size={20} />
