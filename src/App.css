@@ -1,3 +1,49 @@
+/* Add these styles to your App.css */
+.message-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.message-status {
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.message-status.sent {
+  color: #666;
+}
+
+.message-status.delivered {
+  color: #666;
+}
+
+.message-status.seen {
+  color: #4285f4;
+}
+
+.online-indicator {
+  color: #4caf50;
+  margin-left: 4px;
+  font-size: 12px;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+.message-username {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
 /* Online status and message status styles */
 .online-count {
   color: #4CAF50;
