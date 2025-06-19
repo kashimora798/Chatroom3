@@ -1,3 +1,262 @@
+/* Online status and message status styles */
+.online-count {
+  color: #4CAF50;
+  font-size: 0.9rem;
+  margin-left: auto;
+  margin-right: 1rem;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 0.25rem 0.75rem;
+  border-radius: 1rem;
+  backdrop-filter: blur(10px);
+}
+
+.online-indicator {
+  font-size: 0.75rem;
+  margin-left: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.online-indicator.online {
+  color: #4CAF50;
+}
+
+.online-indicator.offline {
+  color: #ef4444;
+}
+
+.online-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4CAF50;
+  animation: pulse 2s infinite;
+}
+
+.offline-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7);
+  }
+  
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 10px rgba(76, 175, 80, 0);
+  }
+  
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
+  }
+}
+
+/* Reply functionality styles */
+.reply-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.5rem;
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.1) 0%, rgba(124, 58, 237, 0.1) 100%);
+  border-left: 4px solid #4f46e5;
+  margin: 0;
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(79, 70, 229, 0.1);
+}
+
+.reply-content {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+}
+
+.reply-content svg {
+  color: #4f46e5;
+  flex-shrink: 0;
+}
+
+.reply-username {
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: #4f46e5;
+  margin-bottom: 0.25rem;
+}
+
+.reply-text {
+  font-size: 0.9rem;
+  color: #6b7280;
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cancel-reply {
+  background: rgba(239, 68, 68, 0.1);
+  border: none;
+  font-size: 1.25rem;
+  cursor: pointer;
+  color: #ef4444;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  flex-shrink: 0;
+}
+
+.cancel-reply:hover {
+  background: rgba(239, 68, 68, 0.2);
+  transform: scale(1.1);
+}
+
+.reply-reference {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 1rem;
+  border-left: 4px solid #4f46e5;
+}
+
+.message-bubble.own .reply-reference {
+  background: rgba(255, 255, 255, 0.15);
+  border-left-color: rgba(255, 255, 255, 0.5);
+}
+
+.reply-bar {
+  width: 3px;
+  background: #4f46e5;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.message-bubble.own .reply-bar {
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.reply-ref-username {
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: #4f46e5;
+  margin-bottom: 0.25rem;
+}
+
+.message-bubble.own .reply-ref-username {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.reply-ref-content {
+  font-size: 0.85rem;
+  color: #6b7280;
+  opacity: 0.8;
+}
+
+.message-bubble.own .reply-ref-content {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* Message status styles */
+.message-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.message-status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.single-tick {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.message-bubble.other .single-tick {
+  color: #9ca3af;
+}
+
+.double-tick {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.message-bubble.other .double-tick {
+  color: #9ca3af;
+}
+
+.double-tick-blue {
+  color: #3b82f6 !important;
+}
+
+/* Swipe animation */
+.message-wrapper {
+  transition: transform 0.2s ease;
+  position: relative;
+}
+
+.message-wrapper.swiping {
+  transform: translateX(20px);
+}
+
+.message-wrapper::before {
+  content: '↩️';
+  position: absolute;
+  left: -2rem;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  font-size: 1.5rem;
+}
+
+.message-wrapper.swiping::before {
+  opacity: 1;
+}
+
+/* Touch improvements */
+.message-wrapper {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+/* Mobile specific adjustments */
+@media (max-width: 768px) {
+  .reply-preview {
+    padding: 0.5rem 1rem;
+  }
+  
+  .reply-text {
+    max-width: 180px;
+  }
+  
+  .online-count {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.5rem;
+  }
+  
+  .message-footer {
+    gap: 0.3rem;
+  }
+}
+
 /* Reset and Base Styles */
 /* Online status and message status styles */
 .online-count {
