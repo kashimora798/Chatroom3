@@ -163,27 +163,59 @@ const Chat = () => {
   }
 
   const setupSubscriptions = () => {
-    // Messages subscription
-    const messagesChannel = supabase.channel(`messages-${Date.now()}`)
-      .on('postgres_changes', 
-        { event: 'INSERT', schema: 'public', table: 'messages' },
-        (payload) => {
+  // Messages subscription
+  const messagesChannel = supabase.channel(`messages-${Date.now()}`)
+    .on('postgres_changes', 
+      { event: 'INSERT', schema: 'public', table: 'messages' },
+      async (payload) => {
+        try {
+          // Fetch the complete message with reply reference
+          const { data: completeMessage, error } = await supabase
+            .from('messages')
+            .select(`
+              *,
+              reply_to:reply_to_id(id, content, username, image_url)
+            `)
+            .eq('id', payload.new.id)
+            .single()
+
+          if (error) {
+            console.error('Error fetching complete message:', error)
+            // Fallback to basic message
+            setMessages(prev => [...prev, payload.new])
+          } else {
+            setMessages(prev => [...prev, completeMessage])
+          }
+        } catch (err) {
+          console.error('Error in message subscription:', err)
+          // Fallback to basic message
           setMessages(prev => [...prev, payload.new])
         }
-      )
-      .subscribe()
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('Successfully subscribed to messages')
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('Message subscription error')
+      }
+    })
 
-    // User status subscription
-    const statusChannel = supabase.channel(`user-status-${Date.now()}`)
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'user_status' },
-        (payload) => {
-          fetchOnlineUsers()
-        }
-      )
-      .subscribe()
+  // User status subscription
+  const statusChannel = supabase.channel(`user-status-${Date.now()}`)
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'user_status' },
+      () => {
+        fetchOnlineUsers()
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('Successfully subscribed to user status')
+      }
+    })
 
-    subscriptionRefs.current = [messagesChannel, statusChannel]
+  subscriptionRefs.current = [messagesChannel, statusChannel]
   }
 
   const sendMessage = async (e) => {
