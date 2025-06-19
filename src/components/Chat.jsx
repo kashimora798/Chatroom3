@@ -20,14 +20,36 @@ const Chat = () => {
   const updatePresence = async (isOnline = true) => {
     if (!user) return
     
-    await supabase
-      .from('user_presence')
-      .upsert({
-        user_id: user.id,
-        is_online: isOnline,
-        last_seen: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
+    try {
+      await supabase
+        .from('user_presence')
+        .upsert({
+          user_id: user.id,
+          is_online: isOnline,
+          last_seen: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+    } catch (error) {
+      console.error('Error updating presence:', error)
+    }
+  }
+
+  const fetchPresenceData = async () => {
+    try {
+      const { data } = await supabase
+        .from('user_presence')
+        .select('*')
+      
+      if (data) {
+        const presenceMap = {}
+        data.forEach(p => {
+          presenceMap[p.user_id] = p
+        })
+        setUserPresence(presenceMap)
+      }
+    } catch (error) {
+      console.error('Error fetching presence:', error)
+    }
   }
 
   const startPresenceTracking = async () => {
@@ -42,36 +64,26 @@ const Chat = () => {
     }, 30000)
 
     // Setup presence channel for real-time updates
-    presenceChannelRef.current = supabase
-      .channel('user_presence_changes')
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'user_presence' },
-        (payload) => {
-          if (payload.new) {
-            setUserPresence(prev => ({
-              ...prev,
-              [payload.new.user_id]: payload.new
-            }))
+    try {
+      presenceChannelRef.current = supabase
+        .channel('user_presence_changes')
+        .on('postgres_changes', 
+          { event: '*', schema: 'public', table: 'user_presence' },
+          (payload) => {
+            if (payload.new) {
+              setUserPresence(prev => ({
+                ...prev,
+                [payload.new.user_id]: payload.new
+              }))
+            }
           }
-        }
-      )
-      .subscribe()
+        )
+        .subscribe()
 
-    // Initial fetch of presence data
-    await fetchPresenceData()
-  }
-
-  const fetchPresenceData = async () => {
-    const { data } = await supabase
-      .from('user_presence')
-      .select('*')
-    
-    if (data) {
-      const presenceMap = {}
-      data.forEach(p => {
-        presenceMap[p.user_id] = p
-      })
-      setUserPresence(presenceMap)
+      // Initial fetch of presence data
+      await fetchPresenceData()
+    } catch (error) {
+      console.error('Error setting up presence tracking:', error)
     }
   }
 
@@ -84,37 +96,27 @@ const Chat = () => {
 
     // Unsubscribe from presence channel
     if (presenceChannelRef.current) {
-      presenceChannelRef.current.unsubscribe()
-      presenceChannelRef.current = null
+      try {
+        presenceChannelRef.current.unsubscribe()
+        presenceChannelRef.current = null
+      } catch (error) {
+        console.error('Error unsubscribing from presence:', error)
+      }
     }
 
     // Set user as offline
     await updatePresence(false)
   }
 
-  // Handle page visibility changes
-  const handleVisibilityChange = () => {
-    if (document.hidden) {
-      updatePresence(false)
-    } else {
-      updatePresence(true)
-    }
-  }
-
-  // Handle page unload
-  const handleBeforeUnload = () => {
-    updatePresence(false)
-  }
-
   useEffect(() => {
     if (user) {
       fetchMessages()
       subscribeToMessages()
-      startPresenceTracking()
-
-      // Add event listeners for presence tracking
-      document.addEventListener('visibilitychange', handleVisibilityChange)
-      window.addEventListener('beforeunload', handleBeforeUnload)
+      
+      // Start presence tracking with a small delay to ensure everything is set up
+      setTimeout(() => {
+        startPresenceTracking()
+      }, 1000)
     }
 
     return () => {
@@ -124,10 +126,6 @@ const Chat = () => {
       }
       
       stopPresenceTracking()
-      
-      // Remove event listeners
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-      window.removeEventListener('beforeunload', handleBeforeUnload)
     }
   }, [user])
 
@@ -140,35 +138,43 @@ const Chat = () => {
   }
 
   const fetchMessages = async () => {
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*, delivered, seen, delivered_at, seen_at')
-      .order('created_at', { ascending: true })
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .order('created_at', { ascending: true })
 
-    if (error) {
-      console.error('Error fetching messages:', error)
-    } else {
-      setMessages(data || [])
-      // Mark messages as seen
-      markMessagesAsSeen(data || [])
+      if (error) {
+        console.error('Error fetching messages:', error)
+      } else {
+        setMessages(data || [])
+        // Mark messages as seen
+        markMessagesAsSeen(data || [])
+      }
+    } catch (error) {
+      console.error('Error in fetchMessages:', error)
     }
   }
 
   const markMessagesAsSeen = async (messages) => {
-    const unseenMessages = messages.filter(msg => 
-      msg.user_id !== user.id && !msg.seen
-    )
+    try {
+      const unseenMessages = messages.filter(msg => 
+        msg.user_id !== user.id && msg.seen === false
+      )
 
-    if (unseenMessages.length > 0) {
-      const messageIds = unseenMessages.map(msg => msg.id)
-      
-      await supabase
-        .from('messages')
-        .update({ 
-          seen: true, 
-          seen_at: new Date().toISOString() 
-        })
-        .in('id', messageIds)
+      if (unseenMessages.length > 0) {
+        const messageIds = unseenMessages.map(msg => msg.id)
+        
+        await supabase
+          .from('messages')
+          .update({ 
+            seen: true, 
+            seen_at: new Date().toISOString() 
+          })
+          .in('id', messageIds)
+      }
+    } catch (error) {
+      console.error('Error marking messages as seen:', error)
     }
   }
 
@@ -188,13 +194,17 @@ const Chat = () => {
           // If it's not our message, mark it as seen after a short delay
           if (payload.new.user_id !== user.id) {
             setTimeout(async () => {
-              await supabase
-                .from('messages')
-                .update({ 
-                  seen: true, 
-                  seen_at: new Date().toISOString() 
-                })
-                .eq('id', payload.new.id)
+              try {
+                await supabase
+                  .from('messages')
+                  .update({ 
+                    seen: true, 
+                    seen_at: new Date().toISOString() 
+                  })
+                  .eq('id', payload.new.id)
+              } catch (error) {
+                console.error('Error marking message as seen:', error)
+              }
             }, 1000)
           }
         }
@@ -222,87 +232,104 @@ const Chat = () => {
 
     setLoading(true)
 
-    const { data, error } = await supabase
-      .from('messages')
-      .insert([
-        {
-          content: newMessage,
-          user_id: user.id,
-          username: user.email,
-          delivered: false,
-          seen: false
-        }
-      ])
-      .select()
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .insert([
+          {
+            content: newMessage,
+            user_id: user.id,
+            username: user.email,
+            delivered: false,
+            seen: false
+          }
+        ])
+        .select()
 
-    if (error) {
-      console.error('Error sending message:', error)
-    } else {
-      setNewMessage('')
-      
-      // Auto-mark as delivered after a short delay (simulating network delivery)
-      if (data && data[0]) {
-        setTimeout(async () => {
-          await supabase
-            .from('messages')
-            .update({ 
-              delivered: true, 
-              delivered_at: new Date().toISOString() 
-            })
-            .eq('id', data[0].id)
-        }, 1000)
+      if (error) {
+        console.error('Error sending message:', error)
+      } else {
+        setNewMessage('')
+        
+        // Auto-mark as delivered after a short delay
+        if (data && data[0]) {
+          setTimeout(async () => {
+            try {
+              await supabase
+                .from('messages')
+                .update({ 
+                  delivered: true, 
+                  delivered_at: new Date().toISOString() 
+                })
+                .eq('id', data[0].id)
+            } catch (error) {
+              console.error('Error updating delivery status:', error)
+            }
+          }, 1000)
+        }
       }
+    } catch (error) {
+      console.error('Error in sendMessage:', error)
     }
+    
     setLoading(false)
   }
 
   const uploadImage = async (file) => {
     setUploadingImage(true)
     
-    const fileExt = file.name.split('.').pop()
-    const fileName = `${Date.now()}.${fileExt}`
-    const filePath = `${fileName}`
+    try {
+      const fileExt = file.name.split('.').pop()
+      const fileName = `${Date.now()}.${fileExt}`
+      const filePath = `${fileName}`
 
-    const { error: uploadError } = await supabase.storage
-      .from('chat-images')
-      .upload(filePath, file)
+      const { error: uploadError } = await supabase.storage
+        .from('chat-images')
+        .upload(filePath, file)
 
-    if (uploadError) {
-      console.error('Error uploading image:', uploadError)
-      setUploadingImage(false)
-      return
-    }
+      if (uploadError) {
+        console.error('Error uploading image:', uploadError)
+        setUploadingImage(false)
+        return
+      }
 
-    const { data } = supabase.storage
-      .from('chat-images')
-      .getPublicUrl(filePath)
+      const { data } = supabase.storage
+        .from('chat-images')
+        .getPublicUrl(filePath)
 
-    const { data: messageData, error } = await supabase
-      .from('messages')
-      .insert([
-        {
-          image_url: data.publicUrl,
-          user_id: user.id,
-          username: user.email,
-          delivered: false,
-          seen: false
-        }
-      ])
-      .select()
+      const { data: messageData, error } = await supabase
+        .from('messages')
+        .insert([
+          {
+            image_url: data.publicUrl,
+            user_id: user.id,
+            username: user.email,
+            delivered: false,
+            seen: false
+          }
+        ])
+        .select()
 
-    if (error) {
-      console.error('Error sending image message:', error)
-    } else if (messageData && messageData[0]) {
-      // Auto-mark as delivered after a short delay
-      setTimeout(async () => {
-        await supabase
-          .from('messages')
-          .update({ 
-            delivered: true, 
-            delivered_at: new Date().toISOString() 
-          })
-          .eq('id', messageData[0].id)
-      }, 1000)
+      if (error) {
+        console.error('Error sending image message:', error)
+      } else if (messageData && messageData[0]) {
+        // Auto-mark as delivered after a short delay
+        setTimeout(async () => {
+          try {
+            await supabase
+              .from('messages')
+              .update({ 
+                delivered: true, 
+                delivered_at: new Date().toISOString() 
+              })
+              .eq('id', messageData[0].id)
+          } catch (error) {
+            console.error('Error updating image delivery status:', error)
+          }
+        }, 1000)
+      }
+    } catch (error) {
+      console.error('Error in uploadImage:', error)
     }
     
     setUploadingImage(false)
@@ -342,7 +369,7 @@ const Chat = () => {
     const now = new Date()
     const diffMinutes = (now - lastSeen) / (1000 * 60)
     
-    return presence.is_online && diffMinutes < 2 // Consider online if active within 2 minutes
+    return presence.is_online && diffMinutes < 2
   }
 
   // Function to render message status
