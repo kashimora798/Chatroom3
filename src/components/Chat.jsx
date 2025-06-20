@@ -19,6 +19,9 @@ const Chat = () => {
   const [searchQuery, setSearchQuery] = useState('')
   const [isTyping, setIsTyping] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [typingUsers, setTypingUsers] = useState(new Map())
+const [typingTimeout, setTypingTimeout] = useState(null)
+const [currentlyTyping, setCurrentlyTyping] = useState(false)
   
   const { user, signOut } = useAuth()
   const messagesEndRef = useRef(null)
@@ -128,21 +131,38 @@ const Chat = () => {
   }
 
   const fetchMessages = async () => {
-    const { data, error } = await supabase
-      .from('messages')
-      .select(`
-        *,
-        reply_to:reply_to_id(id, content, username, image_url)
-      `)
-      .order('created_at', { ascending: true })
+  const { data, error } = await supabase
+    .from('messages')
+    .select(`
+      *,
+      reply_to:reply_to_id(id, content, username, image_url),
+      message_status!inner(status, user_id)
+    `)
+    .order('created_at', { ascending: true })
 
-    if (error) {
-      console.error('Error fetching messages:', error)
-    } else {
-      setMessages(data || [])
-      markMessagesAsDelivered(data || [])
-    }
+  if (error) {
+    console.error('Error fetching messages:', error)
+  } else {
+    // Process messages with status information
+    const processedMessages = (data || []).map(message => {
+      // Get status for messages sent by current user
+      if (message.user_id === user.id) {
+        const statuses = message.message_status || []
+        const hasRead = statuses.some(s => s.status === 'read')
+        const hasDelivered = statuses.some(s => s.status === 'delivered')
+        
+        return {
+          ...message,
+          computed_status: hasRead ? 'read' : hasDelivered ? 'delivered' : 'sent'
+        }
+      }
+      return message
+    })
+    
+    setMessages(processedMessages)
+    markMessagesAsDelivered(processedMessages)
   }
+}
 
   const fetchOnlineUsers = async () => {
     const { data, error } = await supabase
@@ -184,68 +204,235 @@ const Chat = () => {
     }
   }
 
+  
   const markMessagesAsRead = async () => {
-    const unreadMessages = messages.filter(msg => 
-      msg.user_id !== user.id && !msg.read_at
-    )
+  const unreadMessages = messages.filter(msg => 
+    msg.user_id !== user.id && !msg.read_at
+  )
 
-    for (const message of unreadMessages) {
+  for (const message of unreadMessages) {
+    await supabase
+      .from('message_status')
+      .upsert({
+        message_id: message.id,
+        user_id: user.id,
+        status: 'read'
+      })
+    
+    // Also update the message itself
+    await supabase
+      .from('messages')
+      .update({ read_at: new Date().toISOString() })
+      .eq('id', message.id)
+  }
+}
+
+ // Handle typing status changes
+const handleTypingStatusChange = (payload) => {
+  const { user_id, username, is_typing } = payload.new || payload.old
+  
+  if (user_id === user.id) return // Don't show own typing
+  
+  setTypingUsers(prev => {
+    const newTypingUsers = new Map(prev)
+    if (is_typing) {
+      newTypingUsers.set(user_id, { username, timestamp: Date.now() })
+    } else {
+      newTypingUsers.delete(user_id)
+    }
+    return newTypingUsers
+  })
+}
+
+// Handle message status changes for read receipts
+const handleMessageStatusChange = (payload) => {
+  console.log('Message status changed:', payload)
+  const { message_id, status, user_id } = payload.new || {}
+  
+  // Only update if it's not the current user's own status change
+  if (user_id !== user.id) {
+    setMessages(prev => prev.map(msg => {
+      if (msg.id === message_id && msg.user_id === user.id) {
+        // Update the computed status based on the new status
+        return {
+          ...msg,
+          computed_status: status,
+          [`${status}_at`]: new Date().toISOString()
+        }
+      }
+      return msg
+    }))
+  }
+}
+
+// Mark message as delivered
+const markMessageAsDelivered = async (messageId) => {
+  await supabase
+    .from('message_status')
+    .upsert({
+      message_id: messageId,
+      user_id: user.id,
+      status: 'delivered'
+    })
+}
+
+
+// Update read receipts when users come online
+const updateReadReceipts = async () => {
+  const unreadMessages = messages.filter(msg => 
+    msg.user_id === user.id && !msg.read_at
+  )
+
+  for (const message of unreadMessages) {
+    // Check if any online user has this message
+    const onlineUsersList = Array.from(onlineUsers)
+    if (onlineUsersList.length > 0) {
       await supabase
         .from('message_status')
         .upsert({
           message_id: message.id,
-          user_id: user.id,
+          user_id: onlineUsersList[0], // You might want to check all online users
           status: 'read'
         })
     }
   }
+}
 
-  const setupSubscriptions = () => {
-    const messagesChannel = supabase.channel(`messages-${Date.now()}`)
-      .on('postgres_changes', 
-        { event: 'INSERT', schema: 'public', table: 'messages' },
-        async (payload) => {
-          try {
-            const { data: completeMessage, error } = await supabase
-              .from('messages')
-              .select(`
-                *,
-                reply_to:reply_to_id(id, content, username, image_url)
-              `)
-              .eq('id', payload.new.id)
-              .single()
-
-            if (error) {
-              console.error('Error fetching complete message:', error)
-              setMessages(prev => [...prev, payload.new])
-            } else {
-              setMessages(prev => [...prev, completeMessage])
-            }
-          } catch (err) {
-            console.error('Error in message subscription:', err)
-            setMessages(prev => [...prev, payload.new])
-          }
-        }
-      )
-      .subscribe()
-
-    const statusChannel = supabase.channel(`user-status-${Date.now()}`)
-      .on('postgres_changes',
-        { 
-          event: '*',
-          schema: 'public', 
-          table: 'user_status' 
-        },
-        (payload) => {
-          console.log('User status changed:', payload)
-          fetchOnlineUsers()
-          fetchAllUsers()
-        }
-      )
-      .subscribe()
-
-    subscriptionRefs.current = [messagesChannel, statusChannel]
+// Handle typing indicator
+const handleTypingStart = async () => {
+  if (!currentlyTyping) {
+    setCurrentlyTyping(true)
+    await supabase
+      .from('typing_status')
+      .upsert({
+        user_id: user.id,
+        username: user.email,
+        is_typing: true,
+        updated_at: new Date().toISOString()
+      })
   }
+}
+
+const handleTypingStop = async () => {
+  if (currentlyTyping) {
+    setCurrentlyTyping(false)
+    await supabase
+      .from('typing_status')
+      .upsert({
+        user_id: user.id,
+        username: user.email,
+        is_typing: false,
+        updated_at: new Date().toISOString()
+      })
+  }
+}
+
+// Debounced typing handler
+const handleInputChange = (e) => {
+  setNewMessage(e.target.value)
+  
+  // Start typing indicator
+  handleTypingStart()
+  
+  // Clear existing timeout
+  if (typingTimeout) {
+    clearTimeout(typingTimeout)
+  }
+  
+  // Set new timeout to stop typing after 2 seconds of inactivity
+  const newTimeout = setTimeout(() => {
+    handleTypingStop()
+  }, 2000)
+  
+  setTypingTimeout(newTimeout)
+}
+  const setupSubscriptions = () => {
+  const messagesChannel = supabase.channel(`messages-${Date.now()}`)
+    .on('postgres_changes', 
+      { event: 'INSERT', schema: 'public', table: 'messages' },
+      async (payload) => {
+        try {
+          const { data: completeMessage, error } = await supabase
+            .from('messages')
+            .select(`
+              *,
+              reply_to:reply_to_id(id, content, username, image_url)
+            `)
+            .eq('id', payload.new.id)
+            .single()
+
+          if (error) {
+            console.error('Error fetching complete message:', error)
+            setMessages(prev => [...prev, payload.new])
+          } else {
+            setMessages(prev => [...prev, completeMessage])
+            // Mark message as delivered for other users
+            if (completeMessage.user_id !== user.id) {
+              await markMessageAsDelivered(completeMessage.id)
+            }
+          }
+        } catch (err) {
+          console.error('Error in message subscription:', err)
+          setMessages(prev => [...prev, payload.new])
+        }
+      }
+    )
+    .subscribe()
+
+  // Update the user status change handler
+const statusChannel = supabase.channel(`user-status-${Date.now()}`)
+  .on('postgres_changes',
+    { 
+      event: '*',
+      schema: 'public', 
+      table: 'user_status' 
+    },
+    (payload) => {
+      console.log('User status changed:', payload)
+      fetchOnlineUsers()
+      fetchAllUsers()
+      
+      // When a user comes online, mark unread messages as read
+      if (payload.eventType === 'UPDATE' && payload.new.is_online && payload.old?.is_online === false) {
+        console.log('User came online, marking messages as read')
+        setTimeout(() => {
+          markMessagesAsRead()
+        }, 1000) // Small delay to ensure UI is ready
+      }
+    }
+  )
+  .subscribe()
+
+  // Add typing status subscription
+  const typingChannel = supabase.channel(`typing-status-${Date.now()}`)
+    .on('postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'typing_status'
+      },
+      (payload) => {
+        handleTypingStatusChange(payload)
+      }
+    )
+    .subscribe()
+
+  // Add message status subscription for read receipts
+  const messageStatusChannel = supabase.channel(`message-status-${Date.now()}`)
+    .on('postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'message_status'
+      },
+      (payload) => {
+        handleMessageStatusChange(payload)
+      }
+    )
+    .subscribe()
+
+  subscriptionRefs.current = [messagesChannel, statusChannel, typingChannel, messageStatusChannel]
+}
 
   const sendMessage = async (e) => {
     e.preventDefault()
@@ -358,29 +545,73 @@ const Chat = () => {
   }
 
   const getMessageStatus = (message) => {
-    if (message.user_id === user.id) {
-      if (message.read_at) return 'read'
-      if (message.delivered_at || message.status === 'delivered') return 'delivered'
-      return 'sent'
+  if (message.user_id === user.id) {
+    // Use computed status if available, otherwise fall back to existing logic
+    if (message.computed_status) {
+      return message.computed_status
     }
-    return null
+    
+    if (message.read_at) return 'read'
+    if (message.delivered_at || message.status === 'delivered') return 'delivered'
+    return 'sent'
   }
-
-  const renderMessageStatus = (message) => {
-    const status = getMessageStatus(message)
-    if (!status) return null
-
-    switch (status) {
-      case 'sent':
-        return <Check size={16} className="text-white/60" />
-      case 'delivered':
-        return <CheckCheck size={16} className="text-white/60" />
-      case 'read':
-        return <CheckCheck size={16} className="text-blue-400" />
-      default:
-        return null
+  return null
+}
+useEffect(() => {
+  return () => {
+    // Clear typing timeout
+    if (typingTimeout) {
+      clearTimeout(typingTimeout)
     }
+    // Stop typing when component unmounts
+    if (currentlyTyping) {
+      handleTypingStop()
+    }
+    cleanupSubscriptions()
+    updateUserStatus(false)
   }
+}, [])
+
+ const renderMessageStatus = (message) => {
+  const status = getMessageStatus(message)
+  if (!status) return null
+
+  switch (status) {
+    case 'sent':
+      return (
+        <div className="status-indicator status-sent">
+          <Check size={16} />
+        </div>
+      )
+    case 'delivered':
+      return (
+        <div className="status-indicator status-delivered double-check">
+          <CheckCheck size={16} />
+        </div>
+      )
+    case 'read':
+      return (
+        <div className="status-indicator status-read status-read-pulse">
+          <CheckCheck size={16} className="text-green-500" />
+        </div>
+      )
+    default:
+      return null
+  }
+}
+// Add this component for debugging status changes
+const StatusDebugger = ({ message }) => {
+  const status = getMessageStatus(message)
+  
+  if (process.env.NODE_ENV === 'development' && message.user_id === user.id) {
+    return (
+      <div className="text-xs text-gray-400 mt-1">
+        Status: {status} | DB Status: {message.status} | Computed: {message.computed_status}
+      </div>
+    )
+  }
+  return null
+}
 
   const handleTouchStart = (e, message) => {
     const touch = e.touches[0]
@@ -405,6 +636,8 @@ const Chat = () => {
     setSwipeStartX(null)
     setSwipingMessage(null)
   }
+
+  
 
    return (
     <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
@@ -693,32 +926,47 @@ const Chat = () => {
                   </div>
 
                   {/* Own message time & status */}
-                  {isOwn && (
-                    <div className="flex items-center space-x-1 mt-1 px-1">
-                      <span className="text-xs text-gray-500 dark:text-gray-400">
-                        {formatTime(message.created_at)}
-                      </span>
-                      {renderMessageStatus(message)}
-                    </div>
-                  )}
+               {/* Own message time & status */}
+{isOwn && (
+  <div className="flex items-center space-x-1 mt-1 px-1">
+    <span className="text-xs text-gray-500 dark:text-gray-400">
+      {formatTime(message.created_at)}
+    </span>
+    {renderMessageStatus(message)}
+    <StatusDebugger message={message} />
+  </div>
+)}
                 </div>
               </div>
             )
           })}
           
           {/* Typing Indicator */}
-          {isTyping && (
-            <div className="flex items-end space-x-3">
-              <div className="w-8 h-8 bg-gray-300 rounded-full"></div>
-              <div className="bg-gray-200 dark:bg-gray-700 px-4 py-3 rounded-2xl rounded-bl-md">
-                <div className="flex space-x-1">
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
-                </div>
-              </div>
-            </div>
-          )}
+          {/* Enhanced Typing Indicator */}
+{typingUsers.size > 0 && (
+  <div className="flex items-end space-x-3">
+    <div className="w-8 h-8 bg-gray-300 rounded-full flex items-center justify-center">
+      <span className="text-xs font-semibold text-gray-600">
+        {Array.from(typingUsers.values())[0].username.charAt(0).toUpperCase()}
+      </span>
+    </div>
+    <div className="bg-gray-200 dark:bg-gray-700 px-4 py-3 rounded-2xl rounded-bl-md">
+      <div className="flex items-center space-x-2">
+        <div className="flex space-x-1">
+          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
+          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+        </div>
+        <span className="text-sm text-gray-600 dark:text-gray-300">
+          {typingUsers.size === 1 
+            ? `${Array.from(typingUsers.values())[0].username} is typing...`
+            : `${typingUsers.size} people are typing...`
+          }
+        </span>
+      </div>
+    </div>
+  </div>
+)}
           
           {/* Upload Indicator */}
           {uploadingImage && (
@@ -765,14 +1013,15 @@ const Chat = () => {
             
             {/* Message Input */}
             <div className="flex-1 relative">
+             
               <input
-                type="text"
-                value={newMessage}
-                onChange={(e) => setNewMessage(e.target.value)}
-                placeholder="Type a message..."
-                className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-700 border-0 rounded-2xl text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:bg-white dark:focus:bg-gray-600 transition-all resize-none"
-                disabled={loading}
-              />
+  type="text"
+  value={newMessage}
+  onChange={handleInputChange} // Changed from (e) => setNewMessage(e.target.value)
+  placeholder="Type a message..."
+  className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-700 border-0 rounded-2xl text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:bg-white dark:focus:bg-gray-600 transition-all resize-none"
+  disabled={loading}
+/>
               <button
                 type="button"
                 className="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors lg:block hidden"
