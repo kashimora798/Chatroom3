@@ -130,13 +130,13 @@ const [currentlyTyping, setCurrentlyTyping] = useState(false)
     setAllUsers(usersWithStatus)
   }
 
-  const fetchMessages = async () => {
+const fetchMessages = async () => {
   const { data, error } = await supabase
     .from('messages')
     .select(`
       *,
       reply_to:reply_to_id(id, content, username, image_url),
-      message_status!inner(status, user_id)
+      message_status(status, user_id)
     `)
     .order('created_at', { ascending: true })
 
@@ -148,12 +148,19 @@ const [currentlyTyping, setCurrentlyTyping] = useState(false)
       // Get status for messages sent by current user
       if (message.user_id === user.id) {
         const statuses = message.message_status || []
-        const hasRead = statuses.some(s => s.status === 'read')
-        const hasDelivered = statuses.some(s => s.status === 'delivered')
+        const readStatuses = statuses.filter(s => s.status === 'read')
+        const deliveredStatuses = statuses.filter(s => s.status === 'delivered')
+        
+        let computed_status = 'sent'
+        if (readStatuses.length > 0) {
+          computed_status = 'read'
+        } else if (deliveredStatuses.length > 0) {
+          computed_status = 'delivered'
+        }
         
         return {
           ...message,
-          computed_status: hasRead ? 'read' : hasDelivered ? 'delivered' : 'sent'
+          computed_status
         }
       }
       return message
@@ -188,42 +195,62 @@ const [currentlyTyping, setCurrentlyTyping] = useState(false)
     setUserLastSeen(lastSeen)
   }
 
-  const markMessagesAsDelivered = async (messages) => {
-    const undeliveredMessages = messages.filter(msg => 
-      msg.user_id !== user.id && msg.status !== 'delivered' && msg.status !== 'read'
-    )
+ const markMessagesAsDelivered = async (messages) => {
+  if (!user) return
+  
+  const undeliveredMessages = messages.filter(msg => {
+    if (msg.user_id === user.id) return false // Don't mark own messages
+    
+    const statuses = msg.message_status || []
+    const hasDelivered = statuses.some(s => s.user_id === user.id && (s.status === 'delivered' || s.status === 'read'))
+    
+    return !hasDelivered
+  })
 
-    for (const message of undeliveredMessages) {
+  for (const message of undeliveredMessages) {
+    try {
       await supabase
         .from('message_status')
         .upsert({
           message_id: message.id,
           user_id: user.id,
           status: 'delivered'
+        }, {
+          onConflict: 'message_id,user_id'
         })
+    } catch (error) {
+      console.error('Error marking message as delivered:', error)
     }
   }
+}
 
   
-  const markMessagesAsRead = async () => {
-  const unreadMessages = messages.filter(msg => 
-    msg.user_id !== user.id && !msg.read_at
-  )
+const markMessagesAsRead = async () => {
+  if (!user) return
+  
+  const unreadMessages = messages.filter(msg => {
+    if (msg.user_id === user.id) return false // Don't mark own messages
+    
+    const statuses = msg.message_status || []
+    const hasRead = statuses.some(s => s.user_id === user.id && s.status === 'read')
+    
+    return !hasRead
+  })
 
   for (const message of unreadMessages) {
-    await supabase
-      .from('message_status')
-      .upsert({
-        message_id: message.id,
-        user_id: user.id,
-        status: 'read'
-      })
-    
-    // Also update the message itself
-    await supabase
-      .from('messages')
-      .update({ read_at: new Date().toISOString() })
-      .eq('id', message.id)
+    try {
+      await supabase
+        .from('message_status')
+        .upsert({
+          message_id: message.id,
+          user_id: user.id,
+          status: 'read'
+        }, {
+          onConflict: 'message_id,user_id'
+        })
+    } catch (error) {
+      console.error('Error marking message as read:', error)
+    }
   }
 }
 
@@ -245,6 +272,7 @@ const handleTypingStatusChange = (payload) => {
 }
 
 // Handle message status changes for read receipts
+
 const handleMessageStatusChange = (payload) => {
   console.log('Message status changed:', payload)
   const { message_id, status, user_id } = payload.new || {}
@@ -254,9 +282,27 @@ const handleMessageStatusChange = (payload) => {
     setMessages(prev => prev.map(msg => {
       if (msg.id === message_id && msg.user_id === user.id) {
         // Update the computed status based on the new status
+        const currentStatuses = msg.message_status || []
+        
+        // Add or update the status for this user
+        const updatedStatuses = currentStatuses.filter(s => s.user_id !== user_id)
+        updatedStatuses.push({ status, user_id })
+        
+        // Recompute status
+        const readStatuses = updatedStatuses.filter(s => s.status === 'read')
+        const deliveredStatuses = updatedStatuses.filter(s => s.status === 'delivered')
+        
+        let computed_status = 'sent'
+        if (readStatuses.length > 0) {
+          computed_status = 'read'
+        } else if (deliveredStatuses.length > 0) {
+          computed_status = 'delivered'
+        }
+        
         return {
           ...msg,
-          computed_status: status,
+          message_status: updatedStatuses,
+          computed_status,
           [`${status}_at`]: new Date().toISOString()
         }
       }
@@ -347,37 +393,71 @@ const handleInputChange = (e) => {
   setTypingTimeout(newTimeout)
 }
   const setupSubscriptions = () => {
-  const messagesChannel = supabase.channel(`messages-${Date.now()}`)
-    .on('postgres_changes', 
-      { event: 'INSERT', schema: 'public', table: 'messages' },
-      async (payload) => {
-        try {
-          const { data: completeMessage, error } = await supabase
-            .from('messages')
-            .select(`
-              *,
-              reply_to:reply_to_id(id, content, username, image_url)
-            `)
-            .eq('id', payload.new.id)
-            .single()
+const messagesChannel = supabase.channel(`messages-${Date.now()}`)
+  .on('postgres_changes', 
+    { event: 'INSERT', schema: 'public', table: 'messages' },
+    async (payload) => {
+      try {
+        const { data: completeMessage, error } = await supabase
+          .from('messages')
+          .select(`
+            *,
+            reply_to:reply_to_id(id, content, username, image_url),
+            message_status(status, user_id)
+          `)
+          .eq('id', payload.new.id)
+          .single()
 
-          if (error) {
-            console.error('Error fetching complete message:', error)
-            setMessages(prev => [...prev, payload.new])
-          } else {
-            setMessages(prev => [...prev, completeMessage])
-            // Mark message as delivered for other users
-            if (completeMessage.user_id !== user.id) {
-              await markMessageAsDelivered(completeMessage.id)
+        if (error) {
+          console.error('Error fetching complete message:', error)
+          // Fallback to basic message
+          const basicMessage = {
+            ...payload.new,
+            computed_status: payload.new.user_id === user.id ? 'sent' : null,
+            message_status: []
+          }
+          setMessages(prev => [...prev, basicMessage])
+        } else {
+          // Process the complete message
+          let processedMessage = completeMessage
+          if (completeMessage.user_id === user.id) {
+            const statuses = completeMessage.message_status || []
+            const readStatuses = statuses.filter(s => s.status === 'read')
+            const deliveredStatuses = statuses.filter(s => s.status === 'delivered')
+            
+            let computed_status = 'sent'
+            if (readStatuses.length > 0) {
+              computed_status = 'read'
+            } else if (deliveredStatuses.length > 0) {
+              computed_status = 'delivered'
+            }
+            
+            processedMessage = {
+              ...completeMessage,
+              computed_status
             }
           }
-        } catch (err) {
-          console.error('Error in message subscription:', err)
-          setMessages(prev => [...prev, payload.new])
+          
+          setMessages(prev => [...prev, processedMessage])
+          
+          // Mark message as delivered for other users
+          if (completeMessage.user_id !== user.id) {
+            await markMessageAsDelivered(completeMessage.id)
+          }
         }
+      } catch (err) {
+        console.error('Error in message subscription:', err)
+        // Fallback
+        const basicMessage = {
+          ...payload.new,
+          computed_status: payload.new.user_id === user.id ? 'sent' : null,
+          message_status: []
+        }
+        setMessages(prev => [...prev, basicMessage])
       }
-    )
-    .subscribe()
+    }
+  )
+  .subscribe()
 
   // Update the user status change handler
 const statusChannel = supabase.channel(`user-status-${Date.now()}`)
