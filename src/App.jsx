@@ -4,10 +4,12 @@ import { AuthProvider } from './contexts/AuthContext'
 import ProtectedRoute from './components/ProtectedRoute'
 import Login from './components/Login'
 import Chat from './components/Chat'
+import { Analytics } from "@vercel/analytics/react"
 import './App.css'
 
 function App() {
   return (
+    <Analytics/>
     <AuthProvider>
       <Router>
         <div className="App">
