@@ -25,10 +25,11 @@ function App() {
             />
             <Route path="/" element={<Navigate to="/chat" />} />
           </Routes>
+          <Analytics/>
         </div>
       </Router>
     </AuthProvider>
-    <Analytics/>
+    
   )
 }
 
