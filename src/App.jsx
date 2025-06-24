@@ -9,7 +9,7 @@ import './App.css'
 
 function App() {
   return (
-    <Analytics/>
+    
     <AuthProvider>
       <Router>
         <div className="App">
@@ -28,6 +28,7 @@ function App() {
         </div>
       </Router>
     </AuthProvider>
+    <Analytics/>
   )
 }
 
