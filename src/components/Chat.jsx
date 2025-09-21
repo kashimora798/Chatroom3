@@ -3,8 +3,6 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 import { Send, Image, LogOut, Reply, Check, CheckCheck, Users, X, Search, Settings, Plus, Smile, Paperclip, Mic, MoreVertical } from 'lucide-react'
 
-const Chat = () => {
-  // Utility functions for date handling
 const formatDateSeparator = (date) => {
   const messageDate = new Date(date)
   const today = new Date()
@@ -44,6 +42,8 @@ const shouldShowDateSeparator = (currentMessage, previousMessage) => {
   if (!previousMessage) return true
   return !isSameDay(currentMessage.created_at, previousMessage.created_at)
 }
+const Chat = () => {
+  
   const [messages, setMessages] = useState([])
   const [newMessage, setNewMessage] = useState('')
   const [loading, setLoading] = useState(false)
