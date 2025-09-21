@@ -4,6 +4,46 @@ import { useAuth } from '../contexts/AuthContext'
 import { Send, Image, LogOut, Reply, Check, CheckCheck, Users, X, Search, Settings, Plus, Smile, Paperclip, Mic, MoreVertical } from 'lucide-react'
 
 const Chat = () => {
+  // Utility functions for date handling
+const formatDateSeparator = (date) => {
+  const messageDate = new Date(date)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
+  
+  // Reset time to compare only dates
+  const resetTime = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  
+  const messageDateReset = resetTime(messageDate)
+  const todayReset = resetTime(today)
+  const yesterdayReset = resetTime(yesterday)
+  
+  if (messageDateReset.getTime() === todayReset.getTime()) {
+    return 'Today'
+  } else if (messageDateReset.getTime() === yesterdayReset.getTime()) {
+    return 'Yesterday'
+  } else {
+    return messageDate.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    })
+  }
+}
+
+const isSameDay = (date1, date2) => {
+  const d1 = new Date(date1)
+  const d2 = new Date(date2)
+  return d1.getFullYear() === d2.getFullYear() &&
+         d1.getMonth() === d2.getMonth() &&
+         d1.getDate() === d2.getDate()
+}
+
+const shouldShowDateSeparator = (currentMessage, previousMessage) => {
+  if (!previousMessage) return true
+  return !isSameDay(currentMessage.created_at, previousMessage.created_at)
+}
   const [messages, setMessages] = useState([])
   const [newMessage, setNewMessage] = useState('')
   const [loading, setLoading] = useState(false)
@@ -40,7 +80,15 @@ const Chat = () => {
       </div>
     )
   }
-
+const DateSeparator = ({ date }) => (
+  <div className="flex items-center justify-center my-6">
+    <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
+    <div className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-sm font-medium rounded-full border border-gray-300 dark:border-gray-600">
+      {formatDateSeparator(date)}
+    </div>
+    <div className="flex-1 border-t border-gray-300 dark:border-gray-600"></div>
+  </div>
+)
   // Cleanup subscriptions
   const cleanupSubscriptions = useCallback(() => {
     subscriptionRefs.current.forEach(sub => {
@@ -944,16 +992,22 @@ const Chat = () => {
         )}
 
         {/* Messages Container */}
-        <div className="flex-1 overflow-y-auto px-4 lg:px-6 py-4 space-y-4">
-          {messages.map((message, index) => {
-            const showAvatar = index === 0 || messages[index - 1].user_id !== message.user_id
-            const isOwn = message.user_id === user.id
-            
-            return (
-              <div
-                key={message.id}
-                className={`flex items-end space-x-3 ${isOwn ? 'flex-row-reverse space-x-reverse' : ''}`}
-                onTouchStart={(e) => handleTouchStart(e, message)}
+        {messages.map((message, index) => {
+  const showAvatar = index === 0 || messages[index - 1].user_id !== message.user_id
+  const isOwn = message.user_id === user.id
+  const previousMessage = index > 0 ? messages[index - 1] : null
+  const showDateSeparator = shouldShowDateSeparator(message, previousMessage)
+  
+  return (
+    <React.Fragment key={message.id}>
+      {/* Date Separator */}
+      {showDateSeparator && (
+        <DateSeparator date={message.created_at} />
+      )}
+      
+      <div
+        className={`flex items-end space-x-3 ${isOwn ? 'flex-row-reverse space-x-reverse' : ''}`}
+        onTouchStart={(e) => handleTouchStart(e, message)}
                 onTouchMove={(e) => handleTouchMove(e, message)}
                 onTouchEnd={handleTouchEnd}
               >
@@ -1039,8 +1093,9 @@ const Chat = () => {
 )}
                 </div>
               </div>
-            )
-          })}
+    </React.Fragment>
+  )
+})}
           
           {/* Typing Indicator */}
           {/* Enhanced Typing Indicator */}
